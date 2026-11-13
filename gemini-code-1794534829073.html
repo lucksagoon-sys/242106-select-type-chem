@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChemSort - ภารกิจแยกสารเคมี</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600&display=swap');
+        body {
+            font-family: 'Sarabun', sans-serif;
+            text-align: center;
+            background-color: #f4f7f6;
+            margin: 0;
+            padding: 20px;
+        }
+        canvas {
+            background-color: #ffffff;
+            box-shadow: 0px 4px 15px rgba(0,0,0,0.1);
+            border-radius: 12px;
+            touch-action: none; /* ป้องกันการเลื่อนหน้าจอเวลาลากไอเทมบนสมาร์ทโฟน */
+            max-width: 100%;
+        }
+        h2 { color: #2c3e50; }
+        #debug-msg { color: red; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h2>🧪 ChemSort: ภารกิจแยกสาร (ลากไอเทมลงกล่องให้ถูกต้อง)</h2>
+    <div id="debug-msg"></div>
+    <canvas id="gameCanvas" width="800" height="600">
+        เบราว์เซอร์ของคุณไม่รองรับ HTML5 Canvas
+    </canvas>
+
+    <script>
+        // ใช้ window.onload เพื่อให้มั่นใจว่า DOM และ Canvas โหลดเสร็จสมบูรณ์ก่อนทำงาน
+        window.onload = function() {
+            const canvas = document.getElementById('gameCanvas');
+            if (!canvas.getContext) {
+                document.getElementById('debug-msg').innerText = "เบราว์เซอร์ของคุณไม่รองรับ Canvas 2D API";
+                return;
+            }
+            const ctx = canvas.getContext('2d');
+
+            let score = 0;
+            let message = "รอลากไอเทมลงกล่อง...";
+            let messageColor = "#333";
+            let messageTimer = 0;
+
+            // กำหนดหมวดหมู่และพิกัดกล่อง (Hitbox)
+            const boxes = [
+                { id: 0, text: "ธาตุ", color: "#FFD700", x: 40, y: 450, w: 150, h: 100 },
+                { id: 1, text: "สารประกอบ", color: "#98FB98", x: 230, y: 450, w: 150, h: 100 },
+                { id: 2, text: "สารเนื้อเดียว", color: "#87CEFA", x: 420, y: 450, w: 150, h: 100 },
+                { id: 3, text: "สารเนื้อผสม", color: "#FFA07A", x: 610, y: 450, w: 150, h: 100 }
+            ];
+
+            // ฐานข้อมูลไอเทม
+            const itemDatabase = [
+                { name: "ทองคำ", cat: 0, hint: "ประกอบด้วยอะตอมชนิดเดียว" },
+                { name: "ไส้ดินสอ", cat: 0, hint: "คือคาร์บอน (C) ล้วนๆ" },
+                { name: "น้ำตาลทราย", cat: 1, hint: "C12H22O11 อัตราส่วนคงที่" },
+                { name: "เกลือแกง", cat: 1, hint: "NaCl ประกอบจากธาตุ 2 ชนิด" },
+                { name: "น้ำเชื่อม", cat: 2, hint: "มองเป็นเนื้อเดียว แต่แยกได้" },
+                { name: "น้ำส้มสายชู", cat: 2, hint: "สารละลายกรดในน้ำ" },
+                { name: "พริกน้ำปลา", cat: 3, hint: "มองเห็นส่วนผสมแยกกันชัดเจน" },
+                { name: "ชานมไข่มุก", cat: 3, hint: "กระจายตัวไม่สม่ำเสมอ" }
+            ];
+
+            let itemsOnBelt = [];
+            let spawnTimer = 0;
+            const SPAWN_RATE = 120; // ความถี่ในการสุ่มไอเทม
+
+            let isDragging = false;
+            let draggedItem = null;
+
+            // ฟังก์ชันคำนวณพิกัดเมาส์/นิ้วสัมผัส
+            function getPos(e) {
+                const rect = canvas.getBoundingClientRect();
+                const scaleX = canvas.width / rect.width;
+                const scaleY = canvas.height / rect.height;
+                let clientX = e.clientX;
+                let clientY = e.clientY;
+                
+                if (e.touches && e.touches.length > 0) {
+                    clientX = e.touches[0].clientX;
+                    clientY = e.touches[0].clientY;
+                } else if (e.changedTouches && e.changedTouches.length > 0) {
+                    clientX = e.changedTouches[0].clientX;
+                    clientY = e.changedTouches[0].clientY;
+                }
+                return {
+                    x: (clientX - rect.left) * scaleX,
+                    y: (clientY - rect.top) * scaleY
+                };
+            }
+
+            // --- Event Listeners สำหรับ Drag & Drop ---
+            function handleStart(e) {
+                e.preventDefault();
+                const pos = getPos(e);
+                for (let i = itemsOnBelt.length - 1; i >= 0; i--) {
+                    let item = itemsOnBelt[i];
+                    let dx = pos.x - item.x;
+                    let dy = pos.y - item.y;
+                    if (Math.sqrt(dx*dx + dy*dy) < item.radius) {
+                        isDragging = true;
+                        draggedItem = item;
+                        item.isDragging = true;
+                        item.originX = item.x; 
+                        break;
+                    }
+                }
+            }
+
+            function handleMove(e) {
+                if (isDragging && draggedItem) {
+                    e.preventDefault();
+                    const pos = getPos(e);
+                    draggedItem.x = pos.x;
+                    draggedItem.y = pos.y;
+                }
+            }
+
+            function handleEnd(e) {
+                if (isDragging && draggedItem) {
+                    e.preventDefault();
+                    const pos = getPos(e);
+                    let droppedInBox = false;
+
+                    for (let i = 0; i < boxes.length; i++) {
+                        let box = boxes[i];
+                        if (pos.x > box.x && pos.x < box.x + box.w && 
+                            pos.y > box.y && pos.y < box.y + box.h) {
+                            
+                            droppedInBox = true;
+                            if (draggedItem.cat === box.id) {
+                                score += 10;
+                                message = `✅ ถูกต้อง! ${draggedItem.name} คือ ${box.text}`;
+                                messageColor = "#27ae60";
+                                itemsOnBelt = itemsOnBelt.filter(item => item !== draggedItem);
+                            } else {
+                                message = `❌ ผิดครับ! คำใบ้: ${draggedItem.hint}`;
+                                messageColor = "#c0392b";
+                                draggedItem.x = draggedItem.originX;
+                                draggedItem.y = 150; 
+                                draggedItem.isDragging = false;
+                            }
+                            messageTimer = 150; 
+                            break;
+                        }
+                    }
+
+                    if (!droppedInBox) {
+                        draggedItem.x = draggedItem.originX;
+                        draggedItem.y = 150;
+                        draggedItem.isDragging = false;
+                    }
+                    
+                    isDragging = false;
+                    draggedItem = null;
+                }
+            }
+
+            canvas.addEventListener('mousedown', handleStart);
+            canvas.addEventListener('touchstart', handleStart, {passive: false});
+            window.addEventListener('mousemove', handleMove); // เปลี่ยนเป็น window เพื่อป้องกันลากหลุดขอบ canvas
+            window.addEventListener('touchmove', handleMove, {passive: false});
+            window.addEventListener('mouseup', handleEnd);
+            window.addEventListener('touchend', handleEnd);
+
+            // --- Game Loop ---
+            function update() {
+                spawnTimer++;
+                if (spawnTimer > SPAWN_RATE) {
+                    const randomData = itemDatabase[Math.floor(Math.random() * itemDatabase.length)];
+                    itemsOnBelt.push({
+                        name: randomData.name,
+                        cat: randomData.cat,
+                        hint: randomData.hint,
+                        x: -50,
+                        y: 150,
+                        radius: 40,
+                        isDragging: false
+                    });
+                    spawnTimer = 0;
+                }
+
+                for (let i = 0; i < itemsOnBelt.length; i++) {
+                    let item = itemsOnBelt[i];
+                    if (!item.isDragging) {
+                        item.x += 1.5;
+                    }
+                }
+                itemsOnBelt = itemsOnBelt.filter(item => item.x < canvas.width + 100 || item.isDragging);
+            }
+
+            function draw() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                // วาดสายพาน
+                ctx.fillStyle = "#bdc3c7";
+                ctx.fillRect(0, 130, canvas.width, 40);
+                ctx.fillStyle = "#7f8c8d";
+                for (let i = 0; i < canvas.width; i += 40) {
+                    // ใช้เงื่อนไขเวลาในการสร้างแอนิเมชันให้สายพานเลื่อน
+                    let offset = (Date.now() / 15) % 40;
+                    ctx.fillRect(i - offset, 130, 20, 40); 
+                }
+
+                // วาดกล่อง
+                for (let i = 0; i < boxes.length; i++) {
+                    let box = boxes[i];
+                    ctx.fillStyle = box.color;
+                    ctx.fillRect(box.x, box.y, box.w, box.h);
+                    ctx.strokeStyle = "#2c3e50";
+                    ctx.lineWidth = 3;
+                    ctx.strokeRect(box.x, box.y, box.w, box.h);
+                    
+                    ctx.fillStyle = "#2c3e50";
+                    ctx.font = "bold 20px Sarabun, sans-serif";
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "middle";
+                    ctx.fillText(box.text, box.x + box.w/2, box.y + box.h/2);
+                }
+
+                // วาดไอเทม
+                for (let i = 0; i < itemsOnBelt.length; i++) {
+                    let item = itemsOnBelt[i];
+                    ctx.beginPath();
+                    ctx.arc(item.x, item.y, item.radius, 0, Math.PI * 2);
+                    ctx.fillStyle = item.isDragging ? "#f1c40f" : "#ecf0f1";
+                    ctx.fill();
+                    ctx.lineWidth = 2;
+                    ctx.strokeStyle = "#34495e";
+                    ctx.stroke();
+
+                    ctx.fillStyle = "#2c3e50";
+                    ctx.font = "16px Sarabun, sans-serif";
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "middle";
+                    ctx.fillText(item.name, item.x, item.y);
+                }
+
+                // วาด UI ส่วนบน (คะแนน / ข้อความแจ้งเตือน)
+                ctx.fillStyle = "#2c3e50";
+                ctx.font = "bold 24px Sarabun, sans-serif";
+                ctx.textAlign = "left";
+                ctx.textBaseline = "alphabetic";
+                ctx.fillText("Score: " + score, 20, 40);
+
+                if (messageTimer > 0) {
+                    ctx.fillStyle = messageColor;
+                    ctx.textAlign = "center";
+                    ctx.fillText(message, canvas.width / 2, 80);
+                    messageTimer--;
+                }
+            }
+
+            function gameLoop() {
+                update();
+                draw();
+                requestAnimationFrame(gameLoop);
+            }
+
+            // เริ่มการทำงานของเกม
+            gameLoop();
+        };
+    </script>
+</body>
+</html>
